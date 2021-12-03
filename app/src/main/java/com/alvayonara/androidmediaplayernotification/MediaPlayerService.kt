@@ -1,12 +1,14 @@
 package com.alvayonara.androidmediaplayernotification
 
+import android.R
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.drawable.Drawable
 import android.media.MediaPlayer
-import android.media.Rating
 import android.media.session.MediaController
 import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
@@ -14,6 +16,12 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.alvayonara.androidmediaplayernotification.model.AudioPlayerEntity
+import com.bumptech.glide.Glide
+import com.bumptech.glide.request.target.CustomTarget
+import com.bumptech.glide.request.transition.Transition
+import java.io.IOException
+
 
 class MediaPlayerService : Service() {
 
@@ -29,16 +37,30 @@ class MediaPlayerService : Service() {
         const val ACTION_NEXT = "action_next"
         const val ACTION_PREVIOUS = "action_previous"
         const val ACTION_STOP = "action_stop"
+
+        const val EXTRA_CURRENT_PLAYER = "extra_current_player"
+        const val EXTRA_PLAYLIST = "extra_playlist"
     }
 
-    private var mMediaPlayer: MediaPlayer? = null
-    private var mManager: MediaSessionManager? = null
+    private var mMediaPlayer: MediaPlayer = MediaPlayerSingleton.getInstance()
     private var mSession: MediaSession? = null
     private var mController: MediaController? = null
+
+    private var _audioPlayerEntity: AudioPlayerEntity? = null
+    private var _itemsAudio: List<AudioPlayerEntity> = ArrayList()
+    private var _currentSongIndex = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+        intent.extras?.let {
+            _audioPlayerEntity = it.getParcelable(EXTRA_CURRENT_PLAYER)
+            _itemsAudio = it.getParcelableArrayList(EXTRA_PLAYLIST) ?: emptyList()
+        }
+    }
+
+    private fun handleAction(intent: Intent?) {
         if (intent == null || intent.action == null) return
         when (intent.action) {
             ACTION_PLAY -> mController!!.transportControls.play()
@@ -67,30 +89,32 @@ class MediaPlayerService : Service() {
         val intent = Intent(applicationContext, MediaPlayerService::class.java)
         intent.action = ACTION_STOP
         val pendingIntent = PendingIntent.getService(applicationContext, 1, intent, 0)
-
         val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_background)
-            .setContentTitle("Media Title")
-            .setContentText("Media Artist")
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setSmallIcon(R.drawable.ic_media_play)
+            .setContentTitle(_audioPlayerEntity?.title.orEmpty())
+            .setContentText(_audioPlayerEntity?.terms.orEmpty())
             .setDeleteIntent(pendingIntent)
             .setStyle(style)
             .addAction(generateAction(
-                android.R.drawable.ic_media_previous,
+                R.drawable.ic_media_previous,
                 "Previous",
                 ACTION_PREVIOUS
             )
         )
-        builder.addAction(generateAction(android.R.drawable.ic_media_rew, "Rewind", ACTION_REWIND))
+        builder.addAction(generateAction(R.drawable.ic_media_rew, "Rewind", ACTION_REWIND))
         builder.addAction(action)
         builder.addAction(
             generateAction(
-                android.R.drawable.ic_media_ff,
+                R.drawable.ic_media_ff,
                 "Fast Foward",
                 ACTION_FAST_FORWARD
             )
         )
-        builder.addAction(generateAction(android.R.drawable.ic_media_next, "Next", ACTION_NEXT))
+        builder.addAction(generateAction(R.drawable.ic_media_next, "Next", ACTION_NEXT))
         style.setShowActionsInCompactView(0, 1, 2, 3, 4)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -101,82 +125,81 @@ class MediaPlayerService : Service() {
             notificationManager.createNotificationChannel(channel)
         }
 
-        notificationManager.notify(NOTIFICATION_ID, builder.build())
+        Glide.with(this)
+            .asBitmap()
+            .load(_audioPlayerEntity?.thumbnail)
+            .into(object : CustomTarget<Bitmap>(){
+                override fun onResourceReady(resource: Bitmap, transition: Transition<in Bitmap>?) {
+                    builder.setLargeIcon(resource)
+                    notificationManager.notify(NOTIFICATION_ID, builder.build())
+                }
+                override fun onLoadCleared(placeholder: Drawable?) {
+                }
+            })
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (mManager == null) {
-            initMediaSessions()
-        }
         handleIntent(intent)
+        if (mSession == null) {
+            initMediaSessions()
+            _audioPlayerEntity?.let {
+                playAudio(it)
+            }
+        }
+        handleAction(intent)
         return super.onStartCommand(intent, flags, startId)
     }
 
     private fun initMediaSessions() {
-        mMediaPlayer = MediaPlayer()
         mSession = MediaSession(applicationContext, "simple player session")
         mController = MediaController(applicationContext, mSession!!.sessionToken)
         mSession!!.setCallback(object : MediaSession.Callback() {
             override fun onPlay() {
                 super.onPlay()
                 Log.e("MediaPlayerService", "onPlay")
-                buildNotification(
-                    generateAction(
-                        android.R.drawable.ic_media_pause,
-                        "Pause",
-                        ACTION_PAUSE
-                    )
-                )
+                play()
             }
 
             override fun onPause() {
                 super.onPause()
                 Log.e("MediaPlayerService", "onPause")
-                buildNotification(
-                    generateAction(
-                        android.R.drawable.ic_media_play,
-                        "Play",
-                        ACTION_PLAY
-                    )
-                )
+                pause()
             }
 
             override fun onSkipToNext() {
                 super.onSkipToNext()
                 Log.e("MediaPlayerService", "onSkipToNext")
-                //Change media here
                 buildNotification(
                     generateAction(
-                        android.R.drawable.ic_media_pause,
+                        R.drawable.ic_media_pause,
                         "Pause",
                         ACTION_PAUSE
                     )
                 )
+                next()
             }
 
             override fun onSkipToPrevious() {
                 super.onSkipToPrevious()
                 Log.e("MediaPlayerService", "onSkipToPrevious")
-                //Change media here
                 buildNotification(
                     generateAction(
-                        android.R.drawable.ic_media_pause,
+                        R.drawable.ic_media_pause,
                         "Pause",
                         ACTION_PAUSE
                     )
                 )
+                prev()
             }
 
             override fun onFastForward() {
                 super.onFastForward()
                 Log.e("MediaPlayerService", "onFastForward")
-                //Manipulate current media here
             }
 
             override fun onRewind() {
                 super.onRewind()
                 Log.e("MediaPlayerService", "onRewind")
-                //Manipulate current media here
             }
 
             override fun onStop() {
@@ -193,11 +216,99 @@ class MediaPlayerService : Service() {
             override fun onSeekTo(pos: Long) {
                 super.onSeekTo(pos)
             }
-
-            override fun onSetRating(rating: Rating) {
-                super.onSetRating(rating)
-            }
         })
+    }
+
+    private fun next() {
+        if (_currentSongIndex < _itemsAudio.size - 1) {
+            _currentSongIndex += 1
+            playAudio(_itemsAudio[_currentSongIndex])
+        } else {
+            _currentSongIndex = 0
+            playAudio(_itemsAudio[_currentSongIndex])
+        }
+    }
+
+    private fun prev() {
+        if (_currentSongIndex > 0) {
+            _currentSongIndex -= 1
+            playAudio(_itemsAudio[_currentSongIndex])
+        } else {
+            // play last song
+            _currentSongIndex = 0
+            playAudio(_itemsAudio[_currentSongIndex])
+        }
+    }
+
+    private fun playAudio(audioPlayerEntity: AudioPlayerEntity) {
+        try {
+            mMediaPlayer.apply {
+                _audioPlayerEntity = audioPlayerEntity
+
+                reset()
+                setDataSource(audioPlayerEntity.audio)
+                prepareAsync()
+
+                setOnPreparedListener { mediaPlayer ->
+                    buildNotification(
+                        generateAction(
+                            R.drawable.ic_media_pause,
+                            "Pause",
+                            ACTION_PAUSE
+                        )
+                    )
+                    mediaPlayer.start()
+                }
+            }
+
+            // set new current song index
+            _currentSongIndex = _itemsAudio.indexOf(audioPlayerEntity)
+
+//            populateDataAudioPlayer(audioPlayerEntity)
+
+//            _adapter.setNameArticle(audioPlayerEntity.name)
+        } catch (e: IllegalArgumentException) {
+            e.printStackTrace()
+        } catch (e: IllegalStateException) {
+            e.printStackTrace()
+        } catch (e: IOException) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun play() {
+        try {
+            buildNotification(
+                generateAction(
+                    R.drawable.ic_media_pause,
+                    "Pause",
+                    ACTION_PAUSE
+                )
+            )
+            if (!mMediaPlayer.isPlaying) {
+                mMediaPlayer.seekTo(mMediaPlayer.currentPosition)
+                mMediaPlayer.start()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun pause() {
+        try {
+            buildNotification(
+                generateAction(
+                    R.drawable.ic_media_play,
+                    "Play",
+                    ACTION_PLAY
+                )
+            )
+            if (mMediaPlayer.isPlaying) {
+                mMediaPlayer.pause()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
