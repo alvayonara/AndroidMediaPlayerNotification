@@ -1,2 +1,2 @@
 # AndroidMediaPlayerNotification
-Sample #1 implementation notification media player android.
+Implementation of notification media player Android.
